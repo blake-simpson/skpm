@@ -5,6 +5,7 @@ import { runInit } from "./commands/init";
 import { runInfo } from "./commands/info";
 import { runInstall, formatResolutionError } from "./commands/install";
 import { runList } from "./commands/list";
+import { runPublish } from "./commands/publish";
 import { runRemove } from "./commands/remove";
 import { runSearch } from "./commands/search";
 import { runUpdate } from "./commands/update";
@@ -22,6 +23,7 @@ Commands:
   list                        List installed skills
   remove <name>               Remove a skill and reinstall
   info <name> [--version v]   Show skill info
+  publish                     Publish a skill package
 
 Global Options:
   --registry <url>            Override registry URL
@@ -112,6 +114,9 @@ const run = async (): Promise<void> => {
           name: parsed.positionals[0],
           version: parsed.flags.version as string | undefined
         });
+      }
+      case "publish": {
+        return runPublish(context);
       }
       default:
         throw new Error(`Unknown command: ${command}`);
