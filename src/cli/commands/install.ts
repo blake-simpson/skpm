@@ -1,5 +1,4 @@
-import { access, cp, mkdir, readdir, readFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { access, cp, mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { PackageManifest } from "../../types";
 import { ensurePackageCached } from "../../cache/cache";
@@ -7,6 +6,7 @@ import { createLockfile, writeLockfile } from "../../lockfile/lockfile";
 import { readRegistryManifest, listSkillVersions, ensureRegistry } from "../../registry/registry";
 import { resolveDependencies, ResolutionError } from "../../resolver/resolve";
 import { getStorePath, installTopLevelSkill } from "../../install/install";
+import { hashDirectory } from "../../utils/integrity";
 import {
   CommandContext,
   getLockfilePath,
@@ -24,33 +24,6 @@ const pathExists = async (target: string): Promise<boolean> => {
   }
 };
 
-const listFiles = async (root: string): Promise<string[]> => {
-  const entries = await readdir(root, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const fullPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await listFiles(fullPath)));
-    } else if (entry.isFile()) {
-      files.push(fullPath);
-    }
-  }
-  return files;
-};
-
-const hashDirectory = async (root: string): Promise<string> => {
-  const hash = createHash("sha256");
-  const files = await listFiles(root);
-  const sorted = files.sort((a, b) => a.localeCompare(b));
-  for (const filePath of sorted) {
-    const relative = path.relative(root, filePath);
-    hash.update(relative);
-    hash.update("\u0000");
-    const contents = await readFile(filePath);
-    hash.update(contents);
-  }
-  return `sha256-${hash.digest("hex")}`;
-};
 
 const ensureStoredPackage = async (input: {
   projectRoot: string;
@@ -67,6 +40,7 @@ const ensureStoredPackage = async (input: {
 
 const ensureIntegrity = async (input: {
   registryPath: string;
+  registryUrl: string;
   name: string;
   version: string;
   cacheRoot?: string;
@@ -78,6 +52,7 @@ const ensureIntegrity = async (input: {
     return cached;
   }
   const cachedPath = await ensurePackageCached({
+    registryUrl: input.registryUrl,
     registryPath: input.registryPath,
     name: input.name,
     version: input.version,
@@ -95,14 +70,16 @@ export type InstallResult = {
 
 const readSkillVersions = async (
   registryPath: string,
+  registryUrl: string,
   name: string
-): Promise<string[]> => listSkillVersions(registryPath, name);
+): Promise<string[]> => listSkillVersions(registryPath, registryUrl, name);
 
 const readSkillManifest = async (
   registryPath: string,
+  registryUrl: string,
   name: string,
   version: string
-): Promise<PackageManifest> => readRegistryManifest(registryPath, name, version);
+): Promise<PackageManifest> => readRegistryManifest(registryPath, registryUrl, name, version);
 
 export const runInstall = async (context: CommandContext): Promise<InstallResult | void> => {
   const logger = getLogger(context);
@@ -119,12 +96,13 @@ export const runInstall = async (context: CommandContext): Promise<InstallResult
     rootName: manifest.name,
     skills: manifest.skills,
     source: {
-      getVersions: async (name: string) => readSkillVersions(registryPath, name),
+      getVersions: async (name: string) => readSkillVersions(registryPath, registryUrl, name),
       getManifest: async (name: string, version: string) =>
-        readSkillManifest(registryPath, name, version),
+        readSkillManifest(registryPath, registryUrl, name, version),
       getIntegrity: async (name: string, version: string) =>
         ensureIntegrity({
           registryPath,
+          registryUrl,
           name,
           version,
           memo: integrityMemo
@@ -150,6 +128,7 @@ export const runInstall = async (context: CommandContext): Promise<InstallResult
 
   for (const pkg of Object.values(result.packages)) {
     const cachedPath = await ensurePackageCached({
+      registryUrl,
       registryPath,
       name: pkg.name,
       version: pkg.version

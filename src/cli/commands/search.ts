@@ -13,7 +13,7 @@ export const runSearch = async (
   });
 
   const registryPath = await ensureRegistry({ registryUrl });
-  const entries = await searchRegistry(registryPath, query);
+  const entries = await searchRegistry(registryPath, registryUrl, query);
 
   if (!context.json) {
     if (entries.length === 0) {

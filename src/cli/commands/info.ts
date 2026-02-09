@@ -23,7 +23,7 @@ export const runInfo = async (
   });
   const registryPath = await ensureRegistry({ registryUrl });
 
-  const versions = await listSkillVersions(registryPath, options.name);
+  const versions = await listSkillVersions(registryPath, registryUrl, options.name);
   if (versions.length === 0) {
     throw new Error(`Skill not found: ${options.name}`);
   }
@@ -34,7 +34,12 @@ export const runInfo = async (
     version = semver.rsort(valid)[0] ?? versions[versions.length - 1];
   }
 
-  const manifestData = await readRegistryManifest(registryPath, options.name, version);
+  const manifestData = await readRegistryManifest(
+    registryPath,
+    registryUrl,
+    options.name,
+    version
+  );
 
   if (!context.json) {
     logger.log(`${manifestData.name}@${manifestData.version}`);
