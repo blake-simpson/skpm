@@ -8,6 +8,9 @@
     "test": "vitest run",
     "build": "tsc -p tsconfig.json"
   },
+  "bin": {
+    "skpm": "dist/cli/index.js"
+  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/semver": "^7.5.8",
