@@ -3,6 +3,7 @@ import { access, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { IncomingMessage, ClientRequest } from "node:http";
+import http from "node:http";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
@@ -100,11 +101,12 @@ const resolveRegistryLocation = (
 
 const DEFAULT_TIMEOUT_MS = 15000;
 
-const httpsGet = async (
+const requestGet = async (
   url: string,
   options: { headers?: Record<string, string>; timeoutMs?: number } = {}
 ): Promise<IncomingMessage> => {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const client = new URL(url).protocol === "http:" ? http : https;
   let request: ClientRequest | null = null;
   const timeout = setTimeout(() => {
     request?.destroy(new Error(`Request timed out after ${timeoutMs}ms: ${url}`));
@@ -112,7 +114,7 @@ const httpsGet = async (
 
   try {
     const response = await new Promise<IncomingMessage>((resolve, reject) => {
-      const req = https.get(
+      const req = client.get(
         url,
         {
           headers: {
@@ -131,14 +133,14 @@ const httpsGet = async (
   }
 };
 
-const httpsGetWithRedirects = async (
+const requestGetWithRedirects = async (
   url: string,
   options: { headers?: Record<string, string>; timeoutMs?: number; maxRedirects?: number } = {}
 ): Promise<IncomingMessage> => {
   const maxRedirects = options.maxRedirects ?? 5;
   let currentUrl = url;
   for (let remaining = maxRedirects; remaining >= 0; remaining -= 1) {
-    const response = await httpsGet(currentUrl, options);
+    const response = await requestGet(currentUrl, options);
     const status = response.statusCode ?? 0;
     const location = response.headers.location;
     if (status >= 300 && status < 400 && location && remaining > 0) {
@@ -152,7 +154,7 @@ const httpsGetWithRedirects = async (
 };
 
 const fetchJson = async <T>(url: string): Promise<T> => {
-  const response = await httpsGetWithRedirects(url);
+  const response = await requestGetWithRedirects(url);
   if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
     throw new Error(`HTTP ${response.statusCode} for ${url}`);
   }
@@ -309,7 +311,7 @@ export const downloadTarball = async (input: {
     return { statusCode: 200, contentType: "application/gzip" };
   }
 
-  const response = await httpsGetWithRedirects(source.url);
+  const response = await requestGetWithRedirects(source.url);
   if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
     throw new Error(`HTTP ${response.statusCode} for ${source.url}`);
   }
