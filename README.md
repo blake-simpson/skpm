@@ -1,6 +1,6 @@
 # SKPM CLI
 
-SKPM is a v0 skills package manager for AI tools (Claude Code, Codex, Cursor, Windsurf, etc.). It installs, updates, searches, and publishes skills from a git-backed registry with deterministic lockfiles.
+SKPM is a v0 skills package manager for AI tools (Claude Code, Codex, Cursor, Windsurf, etc.). It installs, updates, searches, and publishes skills from an HTTP registry with deterministic lockfiles.
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ Global options:
     "frontend": "^1.2.0",
     "backend": "~2.0.0"
   },
-  "registry": "https://github.com/blake-simpson/skpm-registry",
+  "registry": "https://registry.skpm.dev",
   "agentTargets": ["claude", "codex"]
 }
 ```
@@ -93,7 +93,7 @@ Optional fields:
 ```json
 {
   "lockfileVersion": 1,
-  "registry": "https://github.com/blake-simpson/skpm-registry",
+  "registry": "https://registry.skpm.dev",
   "root": {
     "name": "my-project",
     "skills": {
@@ -118,13 +118,15 @@ Optional fields:
 
 ## Registry Layout
 
-The registry is a git repository with this layout:
+The registry is a static HTTP layout with metadata + tarballs:
 
 ```
-skills/<name>/<version>/
+index.json
+packages/<name>/index.json
+tarballs/<name>/<version>.tgz
 ```
 
-Each version folder includes the package `skpm.json` and files referenced by the package `files` patterns.
+Each package index entry includes the package `manifest`, `integrity`, and `tarball` path. The default registry URL used by the CLI is `https://registry.skpm.dev`.
 
 ## Tool Integration
 
@@ -177,7 +179,7 @@ From a skill package root (with a package `skpm.json`):
 skpm publish
 ```
 
-This will clone or update the registry, copy the package files to `skills/<name>/<version>/`, then commit and push.
+This writes a tarball and metadata into a file-based registry directory, updating `index.json` and `packages/<name>/index.json`. The CLI requires a local registry path (e.g. `--registry file:///path/to/registry` or `--registry ./local-registry`) because HTTP upload is not supported yet.
 
 ## Development
 
