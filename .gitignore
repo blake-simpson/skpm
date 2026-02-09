@@ -1,2 +1,8 @@
 # Belmont local state
 .belmont/
+
+# Node Modules
+node_modules/
+
+# Build Output
+dist/
