@@ -103,4 +103,36 @@ describe("resolveDependencies", () => {
       })
     ).rejects.toBeInstanceOf(ResolutionError);
   });
+
+  it("selects a version that satisfies combined ranges", async () => {
+    const source = createSource({
+      frontend: {
+        "1.0.0": createManifest({
+          name: "frontend",
+          version: "1.0.0",
+          dependencies: { shared: "^1.0.0" }
+        })
+      },
+      backend: {
+        "1.0.0": createManifest({
+          name: "backend",
+          version: "1.0.0",
+          dependencies: { shared: "<=1.2.0" }
+        })
+      },
+      shared: {
+        "1.2.0": createManifest({ name: "shared", version: "1.2.0" }),
+        "1.9.0": createManifest({ name: "shared", version: "1.9.0" })
+      }
+    });
+
+    const result = await resolveDependencies({
+      rootName: "my-project",
+      skills: { frontend: "^1.0.0", backend: "^1.0.0" },
+      source
+    });
+
+    expect(result.packages["frontend@1.0.0"].resolved.shared).toBe("1.2.0");
+    expect(result.packages["backend@1.0.0"].resolved.shared).toBe("1.2.0");
+  });
 });
