@@ -15,7 +15,6 @@ export const runPublish = async (context: CommandContext): Promise<unknown | voi
   if (!context.json) {
     logger.log(`Published ${result.name}@${result.version}`);
     logger.log(`Registry: ${result.registry}`);
-    logger.log(`Commit: ${result.commit}`);
     return undefined;
   }
 

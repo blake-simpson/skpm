@@ -1,17 +1,15 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { access, cp, mkdir, readdir } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import semver from "semver";
 import { loadPackageManifest } from "../manifest/parse";
-import { DEFAULT_REGISTRY, ensureRegistry, type GitRunner } from "../registry/registry";
+import { DEFAULT_REGISTRY } from "../registry/registry";
 import type { PackageManifest } from "../types";
+import { hashFiles } from "../utils/integrity";
 
 const execFileAsync = promisify(execFile);
-
-const defaultGitRunner: GitRunner = async (args, options) => {
-  const result = await execFileAsync("git", args, { cwd: options?.cwd });
-  return result.stdout.trim();
-};
 
 const pathExists = async (target: string): Promise<boolean> => {
   try {
@@ -20,29 +18,6 @@ const pathExists = async (target: string): Promise<boolean> => {
   } catch {
     return false;
   }
-};
-
-const resolveDefaultBranch = async (git: GitRunner, cwd: string): Promise<string> => {
-  try {
-    const ref = await git(["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd });
-    const match = ref.trim().match(/refs\/remotes\/origin\/(.+)$/);
-    if (match?.[1]) {
-      return match[1];
-    }
-  } catch {
-    // fall through
-  }
-  return "main";
-};
-
-const ensureBranch = async (git: GitRunner, cwd: string): Promise<string> => {
-  const current = (await git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd })).trim();
-  if (current && current !== "HEAD") {
-    return current;
-  }
-  const branch = await resolveDefaultBranch(git, cwd);
-  await git(["checkout", "-B", branch, `origin/${branch}`], { cwd });
-  return branch;
 };
 
 const assertRelativePattern = (pattern: string): void => {
@@ -99,7 +74,7 @@ const globToRegExp = (pattern: string): RegExp => {
       continue;
     }
     if ("\\.[]{}()+-^$|".includes(char)) {
-      regex += `\\\\${char}`;
+      regex += `\\${char}`;
     } else {
       regex += char;
     }
@@ -140,17 +115,71 @@ const collectPublishFiles = async (input: {
   return Array.from(files).sort((a, b) => a.localeCompare(b));
 };
 
-const copyPublishFiles = async (input: {
+type RegistryIndexPackage = {
+  name: string;
+  description?: string;
+  latest?: string;
+  versions: string[];
+};
+
+type RegistryIndex = {
+  generatedAt?: string;
+  packages: Record<string, RegistryIndexPackage>;
+};
+
+type PackageVersionMetadata = {
+  manifest: PackageManifest;
+  integrity: string;
+  tarball: string;
+};
+
+type PackageIndex = {
+  name: string;
+  description?: string;
+  versions: Record<string, PackageVersionMetadata>;
+  updatedAt?: string;
+};
+
+const readJsonIfExists = async <T>(filePath: string): Promise<T | null> => {
+  if (!(await pathExists(filePath))) {
+    return null;
+  }
+  const contents = await readFile(filePath, "utf-8");
+  return JSON.parse(contents) as T;
+};
+
+const writeJson = async (filePath: string, data: unknown): Promise<void> => {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+};
+
+const resolveRegistryBaseDir = (input: {
+  registryUrl: string;
+  registryBaseDir?: string;
+}): string => {
+  if (input.registryBaseDir) {
+    return input.registryBaseDir;
+  }
+  const trimmed = input.registryUrl.trim();
+  if (trimmed.startsWith("file://")) {
+    return fileURLToPath(trimmed);
+  }
+  if (path.isAbsolute(trimmed) || trimmed.startsWith(".")) {
+    return path.resolve(trimmed);
+  }
+  throw new Error(
+    "Publish requires a file:// registry URL or an explicit registryBaseDir. HTTP upload is not supported yet."
+  );
+};
+
+const writeTarball = async (input: {
   packageRoot: string;
-  destination: string;
+  tarballPath: string;
   files: string[];
 }): Promise<void> => {
-  for (const file of input.files) {
-    const sourcePath = path.join(input.packageRoot, file);
-    const destinationPath = path.join(input.destination, file);
-    await mkdir(path.dirname(destinationPath), { recursive: true });
-    await cp(sourcePath, destinationPath, { recursive: true });
-  }
+  await mkdir(path.dirname(input.tarballPath), { recursive: true });
+  const args = ["-czf", input.tarballPath, "-C", input.packageRoot, ...input.files];
+  await execFileAsync("tar", args);
 };
 
 export type PublishResult = {
@@ -158,19 +187,16 @@ export type PublishResult = {
   version: string;
   registry: string;
   registryPath: string;
-  destination: string;
-  files: string[];
-  commit: string;
+  tarball: string;
+  integrity: string;
 };
 
 export const publishPackage = async (input: {
   packageRoot: string;
   registryUrl?: string;
   registryBaseDir?: string;
-  git?: GitRunner;
 }): Promise<PublishResult> => {
   const registryUrl = input.registryUrl ?? DEFAULT_REGISTRY;
-  const git = input.git ?? defaultGitRunner;
 
   const manifestPath = path.join(input.packageRoot, "skpm.json");
   if (!(await pathExists(manifestPath))) {
@@ -180,42 +206,66 @@ export const publishPackage = async (input: {
   const manifest = await loadPackageManifest(manifestPath);
   const files = await collectPublishFiles({ packageRoot: input.packageRoot, manifest });
 
-  const registryPath = await ensureRegistry({
+  const registryPath = resolveRegistryBaseDir({
     registryUrl,
-    baseDir: input.registryBaseDir,
-    git
+    registryBaseDir: input.registryBaseDir
   });
 
-  const destination = path.join(registryPath, "skills", manifest.name, manifest.version);
-  if (await pathExists(destination)) {
+  const tarball = path.posix.join("tarballs", manifest.name, `${manifest.version}.tgz`);
+  const tarballPath = path.join(registryPath, tarball);
+
+  if (await pathExists(tarballPath)) {
     throw new Error(`Registry already contains ${manifest.name}@${manifest.version}.`);
   }
 
-  await mkdir(destination, { recursive: true });
-  await copyPublishFiles({ packageRoot: input.packageRoot, destination, files });
+  await writeTarball({ packageRoot: input.packageRoot, tarballPath, files });
 
-  const branch = await ensureBranch(git, registryPath);
-  const publishPath = path.posix.join("skills", manifest.name, manifest.version);
-  await git(["add", publishPath], { cwd: registryPath });
+  const integrity = await hashFiles(input.packageRoot, files);
 
-  const status = await git(["status", "--porcelain"], { cwd: registryPath });
-  if (!status) {
-    throw new Error("No changes detected after publish.");
+  const registryIndexPath = path.join(registryPath, "index.json");
+  const packageIndexPath = path.join(registryPath, "packages", manifest.name, "index.json");
+
+  const registryIndex =
+    (await readJsonIfExists<RegistryIndex>(registryIndexPath)) ??
+    ({ generatedAt: new Date().toISOString(), packages: {} } satisfies RegistryIndex);
+
+  const packageIndex =
+    (await readJsonIfExists<PackageIndex>(packageIndexPath)) ??
+    ({ name: manifest.name, description: manifest.description, versions: {} } satisfies PackageIndex);
+
+  if (packageIndex.versions[manifest.version]) {
+    throw new Error(`Registry already contains ${manifest.name}@${manifest.version}.`);
   }
 
-  const message = `Publish ${manifest.name}@${manifest.version}`;
-  await git(["commit", "-m", message], { cwd: registryPath });
-  await git(["push", "origin", branch], { cwd: registryPath });
+  packageIndex.description = manifest.description;
+  packageIndex.versions[manifest.version] = {
+    manifest,
+    integrity,
+    tarball
+  };
+  packageIndex.updatedAt = new Date().toISOString();
 
-  const commit = await git(["rev-parse", "--short", "HEAD"], { cwd: registryPath });
+  const versions = Object.keys(packageIndex.versions);
+  const valid = versions.filter((version) => semver.valid(version));
+  const latest = semver.rsort(valid)[0] ?? versions.sort().slice(-1)[0];
+
+  registryIndex.packages[manifest.name] = {
+    name: manifest.name,
+    description: manifest.description,
+    latest,
+    versions: versions.sort((a, b) => a.localeCompare(b))
+  };
+  registryIndex.generatedAt = new Date().toISOString();
+
+  await writeJson(packageIndexPath, packageIndex);
+  await writeJson(registryIndexPath, registryIndex);
 
   return {
     name: manifest.name,
     version: manifest.version,
     registry: registryUrl,
     registryPath,
-    destination,
-    files,
-    commit
+    tarball,
+    integrity
   };
 };

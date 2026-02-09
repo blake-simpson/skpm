@@ -1,99 +1,70 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { publishPackage } from "./publish";
-import type { GitRunner } from "../registry/registry";
 
-const execFileAsync = promisify(execFile);
-
-const createBareRegistry = async (): Promise<{
-  origin: string;
-  root: string;
-  gitEnv: NodeJS.ProcessEnv;
-}> => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "skpm-registry-"));
-  const origin = path.join(root, "registry.git");
-  await execFileAsync("git", ["init", "--bare", origin]);
-
-  const seed = path.join(root, "seed");
-  await mkdir(seed, { recursive: true });
-  await execFileAsync("git", ["init"], { cwd: seed });
-  await execFileAsync("git", ["checkout", "-b", "main"], { cwd: seed });
-
-  await mkdir(path.join(seed, "skills"), { recursive: true });
-  await writeFile(path.join(seed, "skills", ".keep"), "");
-
-  const gitEnv = {
-    ...process.env,
-    GIT_AUTHOR_NAME: "Test",
-    GIT_AUTHOR_EMAIL: "test@example.com",
-    GIT_COMMITTER_NAME: "Test",
-    GIT_COMMITTER_EMAIL: "test@example.com"
-  };
-
-  await execFileAsync("git", ["add", "."], { cwd: seed, env: gitEnv });
-  await execFileAsync("git", ["commit", "-m", "seed"], { cwd: seed, env: gitEnv });
-  await execFileAsync("git", ["remote", "add", "origin", origin], { cwd: seed });
-  await execFileAsync("git", ["push", "-u", "origin", "main"], { cwd: seed, env: gitEnv });
-
-  return { origin, root, gitEnv };
+const createPackage = async (root: string): Promise<string> => {
+  const packageRoot = path.join(root, "package");
+  await mkdir(path.join(packageRoot, "skills"), { recursive: true });
+  await writeFile(path.join(packageRoot, "skills", "demo.md"), "hello");
+  await writeFile(
+    path.join(packageRoot, "skpm.json"),
+    JSON.stringify(
+      {
+        name: "demo-skill",
+        version: "1.0.0",
+        description: "Demo skill",
+        dependencies: {},
+        files: ["skills/**"],
+        license: "MIT",
+        author: "Tests",
+        skills: [{ source: "skills/demo.md" }]
+      },
+      null,
+      2
+    )
+  );
+  return packageRoot;
 };
 
 describe("publish", () => {
-  it("publishes a package to the registry", async () => {
-    const { origin, root, gitEnv } = await createBareRegistry();
-
-    const packageRoot = path.join(root, "package");
-    await mkdir(path.join(packageRoot, "skills"), { recursive: true });
-    await writeFile(path.join(packageRoot, "skills", "demo.md"), "hello");
-    await writeFile(
-      path.join(packageRoot, "skpm.json"),
-      JSON.stringify(
-        {
-          name: "demo-skill",
-          version: "1.0.0",
-          description: "Demo skill",
-          dependencies: {},
-          files: ["skills/**"],
-          license: "MIT",
-          author: "Tests",
-          skills: [{ source: "skills/demo.md" }]
-        },
-        null,
-        2
-      )
-    );
-
-    const git: GitRunner = async (args, options) => {
-      const result = await execFileAsync("git", args, { cwd: options?.cwd, env: gitEnv });
-      return result.stdout.trim();
-    };
+  it("publishes tarball + metadata to a registry directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "skpm-registry-"));
+    const packageRoot = await createPackage(root);
+    const registryUrl = pathToFileURL(root).toString();
 
     const result = await publishPackage({
       packageRoot,
-      registryUrl: origin,
-      registryBaseDir: path.join(root, "registry-cache"),
-      git
+      registryUrl
     });
 
-    const publishedManifest = await readFile(
-      path.join(result.destination, "skpm.json"),
-      "utf-8"
-    );
-    const publishedSkill = await readFile(
-      path.join(result.destination, "skills", "demo.md"),
-      "utf-8"
-    );
+    const tarballPath = path.join(root, result.tarball);
+    const tarballStat = await readFile(tarballPath);
+    expect(tarballStat.length).toBeGreaterThan(0);
 
-    expect(JSON.parse(publishedManifest).name).toBe("demo-skill");
-    expect(publishedSkill).toBe("hello");
+    const indexText = await readFile(path.join(root, "index.json"), "utf-8");
+    const index = JSON.parse(indexText) as {
+      packages: Record<string, { versions: string[] }>;
+    };
+    expect(index.packages["demo-skill"].versions).toContain("1.0.0");
+
+    const packageIndexText = await readFile(
+      path.join(root, "packages", "demo-skill", "index.json"),
+      "utf-8"
+    );
+    const packageIndex = JSON.parse(packageIndexText) as {
+      versions: Record<string, { integrity: string; tarball: string }>;
+    };
+    expect(packageIndex.versions["1.0.0"].tarball).toBe(
+      "tarballs/demo-skill/1.0.0.tgz"
+    );
+    expect(packageIndex.versions["1.0.0"].integrity).toContain("sha256-");
   });
 
   it("fails when file patterns match nothing", async () => {
-    const { origin, root, gitEnv } = await createBareRegistry();
+    const root = await mkdtemp(path.join(os.tmpdir(), "skpm-registry-"));
 
     const packageRoot = path.join(root, "bad-package");
     await mkdir(packageRoot, { recursive: true });
@@ -114,17 +85,10 @@ describe("publish", () => {
       )
     );
 
-    const git: GitRunner = async (args, options) => {
-      const result = await execFileAsync("git", args, { cwd: options?.cwd, env: gitEnv });
-      return result.stdout.trim();
-    };
-
     await expect(
       publishPackage({
         packageRoot,
-        registryUrl: origin,
-        registryBaseDir: path.join(root, "registry-cache-bad"),
-        git
+        registryUrl: pathToFileURL(root).toString()
       })
     ).rejects.toThrow(/No files match pattern/);
   });
