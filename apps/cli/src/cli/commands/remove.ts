@@ -1,16 +1,27 @@
-import { rm } from "node:fs/promises";
+import { access, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { ProjectManifest } from "../../types";
+import { readLockfile } from "../../lockfile/lockfile";
 import { runInstall } from "./install";
 import {
   CommandContext,
   getLogger,
+  getLockfilePath,
   loadProjectManifestOrThrow,
   writeProjectManifest
 } from "./shared";
 
 export type RemoveOptions = {
   name: string;
+};
+
+const pathExists = async (target: string): Promise<boolean> => {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 const removeIfExists = async (target: string): Promise<void> => {
@@ -29,6 +40,35 @@ const removeToolLinks = async (projectRoot: string, name: string): Promise<void>
 
   for (const target of targets) {
     await removeIfExists(target);
+  }
+};
+
+const cleanOrphanedStoreEntries = async (projectRoot: string): Promise<void> => {
+  const storeDir = path.join(projectRoot, ".agents", "skills", ".store");
+  if (!(await pathExists(storeDir))) {
+    return;
+  }
+
+  const lockfilePath = getLockfilePath(projectRoot);
+  let referencedKeys: Set<string>;
+  try {
+    const lockfile = await readLockfile(lockfilePath);
+    referencedKeys = new Set(Object.keys(lockfile.packages));
+  } catch {
+    referencedKeys = new Set();
+  }
+
+  const entries = await readdir(storeDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    if (!entry.name.includes("@")) {
+      continue;
+    }
+    if (!referencedKeys.has(entry.name)) {
+      await removeIfExists(path.join(storeDir, entry.name));
+    }
   }
 };
 
@@ -56,6 +96,7 @@ export const runRemove = async (
   await removeToolLinks(context.projectRoot, options.name);
 
   await runInstall(context);
+  await cleanOrphanedStoreEntries(context.projectRoot);
 
   if (!context.json) {
     logger.log(`Removed ${options.name} from skpm.json.`);
