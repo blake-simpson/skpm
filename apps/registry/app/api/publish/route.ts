@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { validateBearerToken } from "../../../lib/auth";
-import { uploadTarball, writeJsonAtomic } from "../../../lib/gcs";
+import { uploadTarball, writeJson } from "../../../lib/gcs";
 import { hashDirectory } from "../../../lib/integrity";
 import { loadPackageIndex, loadRootIndex, withPublishedVersion } from "../../../lib/registry";
 import { validatePublishMetadata } from "../../../lib/validators";
@@ -77,8 +77,8 @@ export async function POST(request: Request): Promise<Response> {
     const updated = withPublishedVersion({ metadata: metadataWithIntegrity, rootIndex, packageIndex });
 
     await uploadTarball(tarballPath, tarballBytes);
-    await writeJsonAtomic(`packages/${metadata.name}/index.json`, updated.packageIndex);
-    await writeJsonAtomic("index.json", updated.rootIndex);
+    await writeJson(`packages/${metadata.name}/index.json`, updated.packageIndex);
+    await writeJson("index.json", updated.rootIndex);
 
     return NextResponse.json({ ok: true, name: metadata.name, version: metadata.version });
   } catch (error) {

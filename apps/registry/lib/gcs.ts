@@ -37,19 +37,13 @@ export const readJson = async <T>(targetPath: string): Promise<T | null> => {
   return JSON.parse(buffer.toString("utf-8")) as T;
 };
 
-export const writeJsonAtomic = async (targetPath: string, payload: unknown): Promise<void> => {
-  const bucket = getBucket();
-  const tempPath = `${targetPath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const tempFile = bucket.file(tempPath);
-  const targetFile = bucket.file(targetPath);
+export const writeJson = async (targetPath: string, payload: unknown): Promise<void> => {
+  const file = getBucket().file(targetPath);
   const contents = JSON.stringify(payload, null, 2);
-
-  await tempFile.save(contents, {
+  await file.save(contents, {
     contentType: "application/json; charset=utf-8",
     resumable: false
   });
-  await tempFile.copy(targetFile);
-  await tempFile.delete({ ignoreNotFound: true });
 };
 
 export const uploadTarball = async (targetPath: string, bytes: Uint8Array): Promise<void> => {
