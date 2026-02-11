@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+
 export const getPublishToken = (): string => {
   const token = process.env.SKPM_PUBLISH_TOKEN?.trim();
   if (!token) {
@@ -14,5 +16,9 @@ export const validateBearerToken = (authorizationHeader: string | null): boolean
   if (!token) {
     return false;
   }
-  return token === getPublishToken();
+  const expected = getPublishToken();
+  if (token.length !== expected.length) {
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(token), Buffer.from(expected));
 };

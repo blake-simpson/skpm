@@ -6,3 +6,17 @@ node_modules/
 
 # Build Output
 dist/
+
+# GC
+skpm-publisher-key.json
+
+# Agents
+.claude/
+.env*
+
+# Internal infra docs
+docs/gcs.md
+docs/vercel.md
+
+# Local doc backups
+.local-docs/

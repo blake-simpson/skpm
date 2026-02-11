@@ -141,8 +141,8 @@ const run = async (): Promise<void> => {
                 : String(error)
         }
       };
-      renderJson(payload);
       process.exitCode = 1;
+      renderJson(payload);
       return;
     }
 
@@ -158,7 +158,9 @@ const run = async (): Promise<void> => {
 };
 
 if (require.main === module) {
-  void run();
+  run().catch(() => {
+    process.exitCode = process.exitCode || 1;
+  });
 }
 
 export { run };

@@ -42,7 +42,10 @@ export const writeJson = async (targetPath: string, payload: unknown): Promise<v
   const contents = JSON.stringify(payload, null, 2);
   await file.save(contents, {
     contentType: "application/json; charset=utf-8",
-    resumable: false
+    resumable: false,
+    metadata: {
+      cacheControl: "no-cache, max-age=0"
+    }
   });
 };
 

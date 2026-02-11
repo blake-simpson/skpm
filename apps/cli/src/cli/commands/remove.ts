@@ -43,7 +43,7 @@ const removeToolLinks = async (projectRoot: string, name: string): Promise<void>
   }
 };
 
-const cleanOrphanedStoreEntries = async (projectRoot: string): Promise<void> => {
+export const cleanOrphanedStoreEntries = async (projectRoot: string): Promise<void> => {
   const storeDir = path.join(projectRoot, ".agents", "skills", ".store");
   if (!(await pathExists(storeDir))) {
     return;
