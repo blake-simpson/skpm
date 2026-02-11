@@ -155,8 +155,15 @@ const requestGetWithRedirects = async (
 
 const fetchJson = async <T>(url: string): Promise<T> => {
   const response = await requestGetWithRedirects(url);
-  if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`HTTP ${response.statusCode} for ${url}`);
+  const statusCode = response.statusCode ?? 0;
+  if (statusCode < 200 || statusCode >= 300) {
+    if (statusCode === 404) {
+      throw new Error(`Not found: ${url}`);
+    }
+    if (statusCode >= 500) {
+      throw new Error(`Registry server error (HTTP ${statusCode}) for ${url}`);
+    }
+    throw new Error(`HTTP ${statusCode} for ${url}`);
   }
 
   const chunks: Buffer[] = [];
@@ -208,34 +215,72 @@ export const ensureRegistry = async (input: {
 }): Promise<string> => {
   const registryPath = getRegistryCachePath(input.registryUrl, input.baseDir);
   await mkdir(registryPath, { recursive: true });
-  await loadJsonWithCache<RegistryIndex>({
-    registryUrl: input.registryUrl,
-    registryPath,
-    relativePath: "index.json"
-  });
+  try {
+    await loadJsonWithCache<RegistryIndex>({
+      registryUrl: input.registryUrl,
+      registryPath,
+      relativePath: "index.json"
+    });
+  } catch (error) {
+    throw new Error(
+      `Unable to reach registry at ${input.registryUrl}. Check your network connection and registry URL.`,
+      { cause: error }
+    );
+  }
   return registryPath;
 };
 
 const readRegistryIndex = async (input: {
   registryUrl: string;
   registryPath: string;
-}): Promise<RegistryIndex> =>
-  loadJsonWithCache<RegistryIndex>({
-    registryUrl: input.registryUrl,
-    registryPath: input.registryPath,
-    relativePath: "index.json"
-  });
+}): Promise<RegistryIndex> => {
+  try {
+    return await loadJsonWithCache<RegistryIndex>({
+      registryUrl: input.registryUrl,
+      registryPath: input.registryPath,
+      relativePath: "index.json"
+    });
+  } catch (error) {
+    throw new Error(
+      `Unable to reach registry at ${input.registryUrl}. Check your network connection and registry URL.`,
+      { cause: error }
+    );
+  }
+};
+
+const isNotFoundError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message;
+  if (message.startsWith("Not found:")) {
+    return true;
+  }
+  const nodeError = error as NodeJS.ErrnoException;
+  if (nodeError.code === "ENOENT") {
+    return true;
+  }
+  return false;
+};
 
 const readPackageIndex = async (input: {
   registryUrl: string;
   registryPath: string;
   name: string;
-}): Promise<PackageIndex> =>
-  loadJsonWithCache<PackageIndex>({
-    registryUrl: input.registryUrl,
-    registryPath: input.registryPath,
-    relativePath: path.posix.join("packages", input.name, "index.json")
-  });
+}): Promise<PackageIndex> => {
+  try {
+    return await loadJsonWithCache<PackageIndex>({
+      registryUrl: input.registryUrl,
+      registryPath: input.registryPath,
+      relativePath: path.posix.join("packages", input.name, "index.json")
+    });
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      throw new Error(`Package '${input.name}' not found in registry.`, { cause: error });
+    }
+    throw error;
+  }
+};
 
 export const listSkillNames = async (
   registryPath: string,

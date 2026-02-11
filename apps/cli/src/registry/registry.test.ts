@@ -214,6 +214,20 @@ describe("registry utilities", () => {
     }
   });
 
+  it("throws user-friendly error for nonexistent package on file registry", async () => {
+    const registry = await createRegistry();
+    await expect(
+      listSkillVersions(registry.root, registry.url, "nonexistent-pkg")
+    ).rejects.toThrow("Package 'nonexistent-pkg' not found in registry.");
+  });
+
+  it("throws user-friendly error for unreachable registry", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "skpm-registry-bad-"));
+    await expect(
+      ensureRegistry({ registryUrl: "/nonexistent/path/to/registry", baseDir: cacheRoot })
+    ).rejects.toThrow("Unable to reach registry at /nonexistent/path/to/registry.");
+  });
+
   it("downloads tarballs from http registry URLs", async () => {
     const registry = createHttpMockRegistry();
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "skpm-tarball-"));
