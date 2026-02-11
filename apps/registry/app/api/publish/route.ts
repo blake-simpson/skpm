@@ -1,9 +1,17 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import os from "node:os";
+import path from "node:path";
 import { NextResponse } from "next/server";
 import { validateBearerToken } from "../../../lib/auth";
 import { uploadTarball, writeJsonAtomic } from "../../../lib/gcs";
+import { hashDirectory } from "../../../lib/integrity";
 import { loadPackageIndex, loadRootIndex, withPublishedVersion } from "../../../lib/registry";
 import { validatePublishMetadata } from "../../../lib/validators";
 import { ZodError } from "zod";
+
+const execFileAsync = promisify(execFile);
 
 export const runtime = "nodejs";
 
@@ -23,6 +31,20 @@ const parseTarball = async (raw: FormDataEntryValue | null): Promise<Uint8Array>
     throw new Error("tarball cannot be empty");
   }
   return new Uint8Array(buffer);
+};
+
+const computeIntegrityFromTarball = async (tarballBytes: Uint8Array): Promise<string> => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "skpm-publish-"));
+  try {
+    const tarPath = path.join(tempRoot, "package.tgz");
+    const extractDir = path.join(tempRoot, "extract");
+    await mkdir(extractDir, { recursive: true });
+    await writeFile(tarPath, tarballBytes);
+    await execFileAsync("tar", ["-xzf", tarPath, "-C", extractDir]);
+    return await hashDirectory(extractDir);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 };
 
 export async function POST(request: Request): Promise<Response> {
@@ -46,9 +68,13 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
+    const integrity = await computeIntegrityFromTarball(tarballBytes);
+
+    const metadataWithIntegrity = { ...metadata, integrity };
+
     const rootIndex = await loadRootIndex();
     const packageIndex = await loadPackageIndex(metadata.name);
-    const updated = withPublishedVersion({ metadata, rootIndex, packageIndex });
+    const updated = withPublishedVersion({ metadata: metadataWithIntegrity, rootIndex, packageIndex });
 
     await uploadTarball(tarballPath, tarballBytes);
     await writeJsonAtomic(`packages/${metadata.name}/index.json`, updated.packageIndex);

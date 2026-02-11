@@ -43,7 +43,7 @@ export const loadPackageIndex = async (name: string): Promise<PackageIndex> => {
 };
 
 export const withPublishedVersion = (input: {
-  metadata: PublishMetadata;
+  metadata: PublishMetadata & { integrity: string };
   rootIndex: RegistryIndex;
   packageIndex: PackageIndex;
 }): { rootIndex: RegistryIndex; packageIndex: PackageIndex } => {

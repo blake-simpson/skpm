@@ -14,7 +14,7 @@ export const publishMetadataSchema = z.object({
   name: z.string().min(1),
   version: z.string().min(1),
   manifest: manifestSchema,
-  integrity: z.string().min(1),
+  integrity: z.string().min(1).optional(),
   tarball: z.string().min(1)
 });
 
