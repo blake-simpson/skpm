@@ -30,7 +30,13 @@ export const runAdd = async (
   };
 
   await writeProjectManifest(context.projectRoot, updated);
-  await runInstall(context);
+
+  try {
+    await runInstall(context);
+  } catch (error) {
+    await writeProjectManifest(context.projectRoot, manifest);
+    throw error;
+  }
 
   if (!context.json) {
     logger.log(`Added ${parsed.name}@${parsed.range} to skpm.json.`);
