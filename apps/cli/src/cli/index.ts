@@ -28,6 +28,7 @@ Commands:
 Global Options:
   --registry <url>            Override registry URL
   --tool <name[,name]>        Override agent targets for install
+  --token <token>             Publish token (or set SKPM_PUBLISH_TOKEN)
   --json                      JSON output
   --verbose                   Verbose logging
   --help                      Show help
@@ -116,7 +117,9 @@ const run = async (): Promise<void> => {
         });
       }
       case "publish": {
-        return runPublish(context);
+        return runPublish(context, {
+          token: parsed.flags.token as string | undefined
+        });
       }
       default:
         throw new Error(`Unknown command: ${command}`);

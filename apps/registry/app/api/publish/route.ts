@@ -1,17 +1,9 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import os from "node:os";
-import path from "node:path";
 import { NextResponse } from "next/server";
 import { validateBearerToken } from "../../../lib/auth";
 import { uploadTarball, writeJson } from "../../../lib/gcs";
-import { hashDirectory } from "../../../lib/integrity";
 import { loadPackageIndex, loadRootIndex, withPublishedVersion } from "../../../lib/registry";
 import { validatePublishMetadata } from "../../../lib/validators";
 import { ZodError } from "zod";
-
-const execFileAsync = promisify(execFile);
 
 export const runtime = "nodejs";
 
@@ -33,17 +25,11 @@ const parseTarball = async (raw: FormDataEntryValue | null): Promise<Uint8Array>
   return new Uint8Array(buffer);
 };
 
-const computeIntegrityFromTarball = async (tarballBytes: Uint8Array): Promise<string> => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "skpm-publish-"));
-  try {
-    const tarPath = path.join(tempRoot, "package.tgz");
-    const extractDir = path.join(tempRoot, "extract");
-    await mkdir(extractDir, { recursive: true });
-    await writeFile(tarPath, tarballBytes);
-    await execFileAsync("tar", ["-xzf", tarPath, "-C", extractDir]);
-    return await hashDirectory(extractDir);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+const GZIP_MAGIC = [0x1f, 0x8b];
+
+const assertGzipBytes = (bytes: Uint8Array): void => {
+  if (bytes.length < 2 || bytes[0] !== GZIP_MAGIC[0] || bytes[1] !== GZIP_MAGIC[1]) {
+    throw new Error("Uploaded tarball is not a valid gzip archive");
   }
 };
 
@@ -57,6 +43,8 @@ export async function POST(request: Request): Promise<Response> {
     const metadata = parseMetadata(formData.get("metadata"));
     const tarballBytes = await parseTarball(formData.get("tarball"));
 
+    assertGzipBytes(tarballBytes);
+
     const tarballPath = `tarballs/${metadata.name}/${metadata.version}.tgz`;
     if (metadata.tarball !== tarballPath) {
       return NextResponse.json(
@@ -68,13 +56,16 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
-    const integrity = await computeIntegrityFromTarball(tarballBytes);
-
-    const metadataWithIntegrity = { ...metadata, integrity };
+    if (!metadata.integrity) {
+      return NextResponse.json(
+        { ok: false, error: "Client must provide integrity hash." },
+        { status: 400 }
+      );
+    }
 
     const rootIndex = await loadRootIndex();
     const packageIndex = await loadPackageIndex(metadata.name);
-    const updated = withPublishedVersion({ metadata: metadataWithIntegrity, rootIndex, packageIndex });
+    const updated = withPublishedVersion({ metadata, rootIndex, packageIndex });
 
     await uploadTarball(tarballPath, tarballBytes);
     await writeJson(`packages/${metadata.name}/index.json`, updated.packageIndex);
@@ -95,7 +86,8 @@ export async function POST(request: Request): Promise<Response> {
       if (
         error.message.includes("required") ||
         error.message.includes("cannot be empty") ||
-        error.message.includes("Tarball path mismatch")
+        error.message.includes("Tarball path mismatch") ||
+        error.message.includes("not a valid gzip")
       ) {
         return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
       }

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { access, mkdir, readFile, writeFile, readdir } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile, readdir, rm, mkdtemp } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import semver from "semver";
@@ -153,6 +154,11 @@ const writeJson = async (filePath: string, data: unknown): Promise<void> => {
   await writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
 };
 
+const isHttpRegistry = (registryUrl: string): boolean => {
+  const trimmed = registryUrl.trim();
+  return /^https?:\/\//i.test(trimmed);
+};
+
 const resolveRegistryBaseDir = (input: {
   registryUrl: string;
   registryBaseDir?: string;
@@ -168,8 +174,17 @@ const resolveRegistryBaseDir = (input: {
     return path.resolve(trimmed);
   }
   throw new Error(
-    "Publish requires a file:// registry URL or an explicit registryBaseDir. HTTP upload is not supported yet."
+    "Publish requires a file:// registry URL or an explicit registryBaseDir."
   );
+};
+
+const derivePublishApiUrl = (registryUrl: string): string => {
+  const url = new URL(registryUrl.trim());
+  if (url.hostname.startsWith("registry.")) {
+    url.hostname = url.hostname.replace(/^registry\./, "api.");
+  }
+  url.pathname = "/api/publish";
+  return url.toString();
 };
 
 const writeTarball = async (input: {
@@ -191,55 +206,149 @@ export type PublishResult = {
   integrity: string;
 };
 
-export const publishPackage = async (input: {
+const publishToHttpRegistry = async (input: {
   packageRoot: string;
-  registryUrl?: string;
-  registryBaseDir?: string;
+  manifest: PackageManifest;
+  files: string[];
+  registryUrl: string;
+  token?: string;
 }): Promise<PublishResult> => {
-  const registryUrl = input.registryUrl ?? DEFAULT_REGISTRY;
-
-  const manifestPath = path.join(input.packageRoot, "skpm.json");
-  if (!(await pathExists(manifestPath))) {
-    throw new Error("Missing skpm.json. Publish must be run from a package root.");
+  const token = input.token ?? process.env.SKPM_PUBLISH_TOKEN;
+  if (!token) {
+    throw new Error(
+      "Missing publish token. Set SKPM_PUBLISH_TOKEN or pass --token."
+    );
   }
 
-  const manifest = await loadPackageManifest(manifestPath);
-  const files = await collectPublishFiles({ packageRoot: input.packageRoot, manifest });
+  const tarball = `tarballs/${input.manifest.name}/${input.manifest.version}.tgz`;
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "skpm-publish-"));
 
+  try {
+    const tarballPath = path.join(tmpDir, `${input.manifest.version}.tgz`);
+    await writeTarball({
+      packageRoot: input.packageRoot,
+      tarballPath,
+      files: input.files
+    });
+
+    const integrity = await hashFiles(input.packageRoot, input.files);
+
+    const normalizedManifest = {
+      ...input.manifest,
+      dependencies: input.manifest.dependencies ?? {}
+    };
+
+    const metadata = {
+      name: input.manifest.name,
+      version: input.manifest.version,
+      manifest: normalizedManifest,
+      integrity,
+      tarball
+    };
+
+    const tarballBytes = await readFile(tarballPath);
+    const formData = new FormData();
+    formData.set("metadata", JSON.stringify(metadata));
+    formData.set(
+      "tarball",
+      new Blob([tarballBytes], { type: "application/gzip" }),
+      `${input.manifest.version}.tgz`
+    );
+
+    const apiUrl = derivePublishApiUrl(input.registryUrl);
+
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData
+    });
+
+    const body = (await response.json()) as { ok?: boolean; error?: string };
+
+    if (!response.ok) {
+      throw new Error(
+        `Publish failed (HTTP ${response.status}): ${body.error ?? "Unknown error"}`
+      );
+    }
+
+    return {
+      name: input.manifest.name,
+      version: input.manifest.version,
+      registry: input.registryUrl,
+      registryPath: apiUrl,
+      tarball,
+      integrity
+    };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+};
+
+const publishToFileRegistry = async (input: {
+  packageRoot: string;
+  manifest: PackageManifest;
+  files: string[];
+  registryUrl: string;
+  registryBaseDir?: string;
+}): Promise<PublishResult> => {
   const registryPath = resolveRegistryBaseDir({
-    registryUrl,
+    registryUrl: input.registryUrl,
     registryBaseDir: input.registryBaseDir
   });
 
-  const tarball = path.posix.join("tarballs", manifest.name, `${manifest.version}.tgz`);
+  const tarball = path.posix.join(
+    "tarballs",
+    input.manifest.name,
+    `${input.manifest.version}.tgz`
+  );
   const tarballPath = path.join(registryPath, tarball);
 
   if (await pathExists(tarballPath)) {
-    throw new Error(`Registry already contains ${manifest.name}@${manifest.version}.`);
+    throw new Error(
+      `Registry already contains ${input.manifest.name}@${input.manifest.version}.`
+    );
   }
 
-  await writeTarball({ packageRoot: input.packageRoot, tarballPath, files });
+  await writeTarball({
+    packageRoot: input.packageRoot,
+    tarballPath,
+    files: input.files
+  });
 
-  const integrity = await hashFiles(input.packageRoot, files);
+  const integrity = await hashFiles(input.packageRoot, input.files);
 
   const registryIndexPath = path.join(registryPath, "index.json");
-  const packageIndexPath = path.join(registryPath, "packages", manifest.name, "index.json");
+  const packageIndexPath = path.join(
+    registryPath,
+    "packages",
+    input.manifest.name,
+    "index.json"
+  );
 
   const registryIndex =
     (await readJsonIfExists<RegistryIndex>(registryIndexPath)) ??
-    ({ generatedAt: new Date().toISOString(), packages: {} } satisfies RegistryIndex);
+    ({
+      generatedAt: new Date().toISOString(),
+      packages: {}
+    } satisfies RegistryIndex);
 
   const packageIndex =
     (await readJsonIfExists<PackageIndex>(packageIndexPath)) ??
-    ({ name: manifest.name, description: manifest.description, versions: {} } satisfies PackageIndex);
+    ({
+      name: input.manifest.name,
+      description: input.manifest.description,
+      versions: {}
+    } satisfies PackageIndex);
 
-  if (packageIndex.versions[manifest.version]) {
-    throw new Error(`Registry already contains ${manifest.name}@${manifest.version}.`);
+  if (packageIndex.versions[input.manifest.version]) {
+    throw new Error(
+      `Registry already contains ${input.manifest.name}@${input.manifest.version}.`
+    );
   }
 
-  packageIndex.description = manifest.description;
-  packageIndex.versions[manifest.version] = {
-    manifest,
+  packageIndex.description = input.manifest.description;
+  packageIndex.versions[input.manifest.version] = {
+    manifest: input.manifest,
     integrity,
     tarball
   };
@@ -249,9 +358,9 @@ export const publishPackage = async (input: {
   const valid = versions.filter((version) => semver.valid(version));
   const latest = semver.rsort(valid)[0] ?? versions.sort().slice(-1)[0];
 
-  registryIndex.packages[manifest.name] = {
-    name: manifest.name,
-    description: manifest.description,
+  registryIndex.packages[input.manifest.name] = {
+    name: input.manifest.name,
+    description: input.manifest.description,
     latest,
     versions: versions.sort((a, b) => a.localeCompare(b))
   };
@@ -261,11 +370,51 @@ export const publishPackage = async (input: {
   await writeJson(registryIndexPath, registryIndex);
 
   return {
-    name: manifest.name,
-    version: manifest.version,
-    registry: registryUrl,
+    name: input.manifest.name,
+    version: input.manifest.version,
+    registry: input.registryUrl,
     registryPath,
     tarball,
     integrity
   };
+};
+
+export const publishPackage = async (input: {
+  packageRoot: string;
+  registryUrl?: string;
+  registryBaseDir?: string;
+  token?: string;
+}): Promise<PublishResult> => {
+  const registryUrl = input.registryUrl ?? DEFAULT_REGISTRY;
+
+  const manifestPath = path.join(input.packageRoot, "skpm.json");
+  if (!(await pathExists(manifestPath))) {
+    throw new Error(
+      "Missing skpm.json. Publish must be run from a package root."
+    );
+  }
+
+  const manifest = await loadPackageManifest(manifestPath);
+  const files = await collectPublishFiles({
+    packageRoot: input.packageRoot,
+    manifest
+  });
+
+  if (isHttpRegistry(registryUrl)) {
+    return publishToHttpRegistry({
+      packageRoot: input.packageRoot,
+      manifest,
+      files,
+      registryUrl,
+      token: input.token
+    });
+  }
+
+  return publishToFileRegistry({
+    packageRoot: input.packageRoot,
+    manifest,
+    files,
+    registryUrl,
+    registryBaseDir: input.registryBaseDir
+  });
 };

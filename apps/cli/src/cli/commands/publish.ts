@@ -1,7 +1,10 @@
 import { publishPackage } from "../../publish/publish";
 import { CommandContext, getLogger, resolveRegistryUrl } from "./shared";
 
-export const runPublish = async (context: CommandContext): Promise<unknown | void> => {
+export const runPublish = async (
+  context: CommandContext,
+  options?: { token?: string }
+): Promise<unknown | void> => {
   const logger = getLogger(context);
   const registryUrl = resolveRegistryUrl({
     registryOverride: context.registryOverride
@@ -9,7 +12,8 @@ export const runPublish = async (context: CommandContext): Promise<unknown | voi
 
   const result = await publishPackage({
     packageRoot: context.projectRoot,
-    registryUrl
+    registryUrl,
+    token: options?.token
   });
 
   if (!context.json) {

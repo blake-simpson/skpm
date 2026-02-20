@@ -1,20 +1,26 @@
 import { z } from "zod";
 
+const skillFileMappingSchema = z.object({
+  source: z.string().min(1)
+});
+
 const manifestSchema = z.object({
   name: z.string().min(1),
   version: z.string().min(1),
   description: z.string().min(1),
-  dependencies: z.record(z.string()),
+  dependencies: z.record(z.string()).optional(),
   files: z.array(z.string()).min(1),
   license: z.string().min(1),
-  author: z.string().min(1)
+  author: z.string().min(1),
+  skills: z.array(skillFileMappingSchema).optional(),
+  agents: z.array(skillFileMappingSchema).optional()
 });
 
 export const publishMetadataSchema = z.object({
   name: z.string().min(1),
   version: z.string().min(1),
   manifest: manifestSchema,
-  integrity: z.string().min(1).optional(),
+  integrity: z.string().min(1),
   tarball: z.string().min(1)
 });
 
